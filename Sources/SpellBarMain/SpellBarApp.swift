@@ -174,10 +174,10 @@ final class SpellBarController: NSObject {
         checkItem.target = self
         menu.addItem(checkItem)
 
-        let instantItem = NSMenuItem(title: "Instant Best-Guess Fix", action: #selector(triggerInstantFromMenu), keyEquivalent: ";")
-        instantItem.keyEquivalentModifierMask = [.command, .shift]
-        instantItem.target = self
-        menu.addItem(instantItem)
+        let batchItem = NSMenuItem(title: "Batch Auto-Fix All Typos", action: #selector(triggerBatchFromMenu), keyEquivalent: ";")
+        batchItem.keyEquivalentModifierMask = [.command, .shift]
+        batchItem.target = self
+        menu.addItem(batchItem)
 
         menu.addItem(.separator())
 
@@ -190,6 +190,7 @@ final class SpellBarController: NSObject {
             "  h / l (or Tab / Arrows) — Cycle suggestions",
             "  1–5 — Pick suggestion by number",
             "  n or ⌘' — Jump to next red squiggly",
+            "  ⌘⇧; — Batch auto-fix all safe typos",
             "  Esc — Dismiss"
         ] {
             let item = NSMenuItem(title: hint, action: nil, keyEquivalent: "")
@@ -225,8 +226,8 @@ final class SpellBarController: NSObject {
         handlePrimaryTrigger()
     }
 
-    @objc private func triggerInstantFromMenu() {
-        handleInstantBestGuessTrigger()
+    @objc private func triggerBatchFromMenu() {
+        handleBatchAutoFixTrigger()
     }
 
     @objc private func toggleLaunchAtLogin() {
@@ -363,8 +364,8 @@ final class SpellBarController: NSObject {
                 handlePrimaryTrigger()
             }
         case 2:
-            // Cmd + Shift + ; -> Instant best-guess replacement without UI
-            handleInstantBestGuessTrigger()
+            // Cmd + Shift + ; -> Safe-calibrated batch auto-fix
+            handleBatchAutoFixTrigger()
         case 10, 11:
             state.commitActive()
         case 12, 14, 15, 26, 28:
@@ -413,33 +414,90 @@ final class SpellBarController: NSObject {
         presentAnalysis(for: selected)
     }
 
-    private func handleInstantBestGuessTrigger() {
+    private func handleBatchAutoFixTrigger() {
         guard AccessibilityBridge.shared.isTrusted,
               let frontApp = NSWorkspace.shared.frontmostApplication else {
             handlePrimaryTrigger()
             return
         }
         targetPID = frontApp.processIdentifier
+        dismissPill(collapseSelection: false)
 
-        guard let selected = AccessibilityBridge.shared.selectMisspelledOrCurrentWord(
+        let savedPb = AccessibilityBridge.shared.snapshotPasteboard()
+
+        var fixes: [BatchFixSummary] = []
+        var seenWords = Set<String>()
+        let maxReplacements = 8
+        let maxIterations = 16
+
+        // 1. Select the initial misspelled word (or current word)
+        var currentSelected = AccessibilityBridge.shared.selectMisspelledOrCurrentWord(
             in: targetPID,
             hadActiveSelectionFromSpellBar: hasUncollapsedSpellBarSelection,
             temporarilyBypassHotkey: { [weak self] work in
                 self?.temporarilyBypassPrimaryHotKey(work)
             }
-        ) else {
-            hasUncollapsedSpellBarSelection = false
-            return
+        )
+        hasUncollapsedSpellBarSelection = false
+
+        // 2. Scan and replace safe high-confidence typos
+        for _ in 0..<maxIterations {
+            guard let raw = currentSelected,
+                  !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                break
+            }
+
+            let analysis = SpellEngine.shared.analyze(raw)
+            let coreLower = analysis.coreWord.lowercased()
+
+            // Wrap-around detection: stop if Chrome or web editor loops back to start
+            if seenWords.contains(coreLower) {
+                break
+            }
+            seenWords.insert(coreLower)
+
+            if let safeFix = SpellEngine.shared.highConfidenceSuggestion(for: analysis) {
+                let finalReplacement = analysis.formattedReplacement(using: safeFix)
+                AccessibilityBridge.shared.replaceSelectionDirect(with: finalReplacement)
+                fixes.append(BatchFixSummary(from: analysis.coreWord, to: safeFix))
+
+                if fixes.count >= maxReplacements {
+                    break
+                }
+
+                // Allow web editor DOM to settle after paste
+                usleep(55_000)
+            }
+
+            // Advance to next misspelled word
+            currentSelected = AccessibilityBridge.shared.advanceToNextMisspelledWord(
+                in: targetPID,
+                temporarilyBypassHotkey: { [weak self] work in
+                    self?.temporarilyBypassPrimaryHotKey(work)
+                }
+            )
         }
 
-        let analysis = SpellEngine.shared.analyze(selected)
-        if let best = analysis.suggestions.first {
-            let finalString = analysis.formattedReplacement(using: best)
-            AccessibilityBridge.shared.replaceSelection(with: finalString)
-            hasUncollapsedSpellBarSelection = false
-        } else {
-            hasUncollapsedSpellBarSelection = true
+        // 3. Collapse selection to right edge so user can keep typing immediately
+        AccessibilityBridge.shared.collapseSelectionToRightEdge()
+        hasUncollapsedSpellBarSelection = false
+
+        // 4. Restore original pasteboard contents after a settling interval
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            AccessibilityBridge.shared.restorePasteboard(from: savedPb)
         }
+
+        // 5. Show summary toast pill
+        autoDismissWorkItem?.cancel()
+        autoDismissWorkItem = nil
+
+        let anchor = AccessibilityBridge.shared.locateSelectionAnchor(for: targetPID)
+        state.mode = .batchResult(fixes: fixes)
+        pillShownAt = CACurrentMediaTime()
+        registerModalHotKeys()
+        panel.show(near: anchor)
+        installOutsideMonitors()
+        scheduleAutoDismiss(after: fixes.isEmpty ? 2.5 : 3.5)
     }
 
     private func skipToNextMisspelled() {

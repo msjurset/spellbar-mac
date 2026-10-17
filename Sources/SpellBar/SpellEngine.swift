@@ -319,4 +319,52 @@ public final class SpellEngine {
         }
         return dp[m][n]
     }
+
+    /// Determines whether an analyzed word qualifies for unattended batch auto-correction.
+    /// Returns the replacement string if safe and unambiguous; nil if risky or ambiguous.
+    public func highConfidenceSuggestion(for analysis: WordAnalysis) -> String? {
+        let word = analysis.coreWord
+        guard word.count >= 3 else { return nil }
+
+        // Must only contain letters or apostrophes (skip flags, variables, paths, and URLs)
+        guard word.allSatisfy({ $0.isLetter || $0 == "'" || $0 == "’" }) else { return nil }
+
+        // Must not be all-caps (skip acronyms like API, JSON, URL)
+        let letters = word.filter { $0.isLetter }
+        guard !letters.allSatisfy({ $0.isUppercase }) else { return nil }
+
+        // Must not be camelCase / PascalCase with mid-word uppercase (e.g. "myVar", "iPhone")
+        if letters.count > 1 {
+            let tail = letters.dropFirst()
+            if tail.contains(where: { $0.isUppercase }) && !letters.allSatisfy({ $0.isUppercase }) {
+                return nil
+            }
+        }
+
+        let lowered = word.lowercased()
+
+        // 1. Direct match in curated common typos dictionary (100% confidence)
+        if let directFix = commonTypos[lowered] {
+            return applyCasing(of: word, to: directFix)
+        }
+
+        // 2. High-confidence suggestions check
+        guard let bestGuess = analysis.suggestions.first else { return nil }
+
+        let dist = editDistance(lowered, bestGuess.lowercased())
+
+        // Single transposition or 1-edit typo where top guess is clear winner
+        if dist <= 1 {
+            if analysis.suggestions.count >= 2 {
+                let secondDist = editDistance(lowered, analysis.suggestions[1].lowercased())
+                // If top 2 guesses are tied in edit distance, it is ambiguous -> skip
+                if secondDist == dist {
+                    return nil
+                }
+            }
+            return bestGuess
+        }
+
+        return nil
+    }
 }

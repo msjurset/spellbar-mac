@@ -73,4 +73,54 @@ final class SpellBarTests: XCTestCase {
         XCTAssertEqual(analysis.suggestions.first, "definitely")
         XCTAssertEqual(analysis.formattedReplacement(using: "definitely"), "preceding definitely.")
     }
+
+    @MainActor
+    func testHighConfidenceSuggestionOnCommonTypos() {
+        let engine = SpellEngine.shared
+
+        let teh = engine.analyze("teh")
+        XCTAssertEqual(engine.highConfidenceSuggestion(for: teh), "the")
+
+        let titleTeh = engine.analyze("Teh")
+        XCTAssertEqual(engine.highConfidenceSuggestion(for: titleTeh), "The")
+
+        let def = engine.analyze("definately")
+        XCTAssertEqual(engine.highConfidenceSuggestion(for: def), "definitely")
+
+        let sep = engine.analyze("seperate")
+        XCTAssertEqual(engine.highConfidenceSuggestion(for: sep), "separate")
+    }
+
+    @MainActor
+    func testHighConfidenceSuggestionRejectsUnsafeTokens() {
+        let engine = SpellEngine.shared
+
+        // Short words (< 3 chars)
+        let shortWord = engine.analyze("am")
+        XCTAssertNil(engine.highConfidenceSuggestion(for: shortWord))
+
+        // All-caps acronyms
+        let acronym = engine.analyze("API")
+        XCTAssertNil(engine.highConfidenceSuggestion(for: acronym))
+
+        // camelCase identifiers
+        let camel = engine.analyze("myVar")
+        XCTAssertNil(engine.highConfidenceSuggestion(for: camel))
+
+        // Flags and symbols
+        let flag = engine.analyze("--verbose")
+        XCTAssertNil(engine.highConfidenceSuggestion(for: flag))
+    }
+
+    func testBatchFixSummaryModel() {
+        let item1 = BatchFixSummary(from: "teh", to: "the")
+        let item2 = BatchFixSummary(from: "teh", to: "the")
+        let item3 = BatchFixSummary(from: "definately", to: "definitely")
+
+        XCTAssertEqual(item1, item2)
+        XCTAssertNotEqual(item1, item3)
+        XCTAssertEqual(item1.from, "teh")
+        XCTAssertEqual(item1.to, "the")
+    }
 }
+

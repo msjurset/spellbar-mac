@@ -186,6 +186,16 @@ public final class AccessibilityBridge {
         }
     }
 
+    /// Replaces the active selection immediately without scheduling pasteboard restoration (used during batch auto-fix passes).
+    public func replaceSelectionDirect(with replacement: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(replacement, forType: .string)
+
+        usleep(15_000)
+        postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
+    }
+
     // MARK: - AX Selection & Exact Word Screen Bounds
 
     /// Reads both the selected text and its exact Quartz screen rectangle using `AXSelectedTextMarkerRange` (Chrome/WebKit)
@@ -460,7 +470,7 @@ public final class AccessibilityBridge {
         return copied
     }
 
-    private func snapshotPasteboard(_ pb: NSPasteboard) -> [[(NSPasteboard.PasteboardType, Data)]] {
+    public func snapshotPasteboard(_ pb: NSPasteboard = .general) -> [[(NSPasteboard.PasteboardType, Data)]] {
         guard let items = pb.pasteboardItems else { return [] }
         var snapshot: [[(NSPasteboard.PasteboardType, Data)]] = []
         for item in items {
@@ -477,7 +487,7 @@ public final class AccessibilityBridge {
         return snapshot
     }
 
-    private func restorePasteboard(_ pb: NSPasteboard, from snapshot: [[(NSPasteboard.PasteboardType, Data)]]) {
+    public func restorePasteboard(_ pb: NSPasteboard = .general, from snapshot: [[(NSPasteboard.PasteboardType, Data)]]) {
         pb.clearContents()
         guard !snapshot.isEmpty else { return }
         var newItems: [NSPasteboardItem] = []

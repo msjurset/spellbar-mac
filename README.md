@@ -27,7 +27,7 @@ SpellBar lives in the background with zero idle overhead. When you press **`⌘;
 | **`1` – `5`** | **Direct Pick** | Instantly commits suggestion `#1` through `#5`. |
 | **`n`** or **`⌘'`** | **Next Error** | Skips the current word, jumps to the **next** red-squiggly typo in the field, and updates suggestions in place. |
 | **`Esc`** | **Dismiss** | Closes the floating bar, collapses the text selection to the right edge, and resumes normal typing. |
-| **`⌘⇧;`** | **Zero-UI Headless Fix** | Replaces the misspelled word with the #1 best guess immediately without opening any UI. |
+| **`⌘⇧;`** | **Batch Auto-Fix** | Scans the active field and auto-replaces all safe, unambiguous high-confidence typos in a single keystroke, displaying a brief summary toast with a `⌘Z Undo` hint. Ignores code, camelCase, flags, and ambiguous ties. |
 
 ---
 

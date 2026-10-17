@@ -2,6 +2,16 @@ import AppKit
 import Observation
 import SwiftUI
 
+public struct BatchFixSummary: Equatable {
+    public let from: String
+    public let to: String
+
+    public init(from: String, to: String) {
+        self.from = from
+        self.to = to
+    }
+}
+
 @MainActor
 @Observable
 public final class SpellBarState {
@@ -10,6 +20,7 @@ public final class SpellBarState {
         case needsPermission
         case suggestions(WordAnalysis)
         case cleanWord(String)
+        case batchResult(fixes: [BatchFixSummary])
     }
 
     public var mode: Mode = .hidden
@@ -74,6 +85,9 @@ public struct SpellBarView: View {
 
             case .cleanWord(let word):
                 cleanWordView(word: word)
+
+            case .batchResult(let fixes):
+                batchResultView(fixes: fixes)
             }
         }
         .padding(.horizontal, 12)
@@ -220,6 +234,61 @@ public struct SpellBarView: View {
             }
             .buttonStyle(.plain)
             .focusable(false)
+        }
+    }
+
+    private func batchResultView(fixes: [BatchFixSummary]) -> some View {
+        HStack(spacing: 10) {
+            if fixes.isEmpty {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 14))
+                    .foregroundStyle(Color.green)
+
+                Text("No safe typos found")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.9))
+            } else {
+                Image(systemName: "wand.and.stars")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color.indigo)
+
+                HStack(spacing: 6) {
+                    Text("Auto-fixed \(fixes.count):")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white)
+
+                    ForEach(Array(fixes.prefix(3).enumerated()), id: \.offset) { _, fix in
+                        HStack(spacing: 4) {
+                            Text(fix.from)
+                                .font(.system(size: 11, design: .monospaced))
+                                .strikethrough(true, color: Color.red.opacity(0.8))
+                                .foregroundStyle(Color.white.opacity(0.7))
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.45))
+                            Text(fix.to)
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundStyle(Color.green.opacity(0.95))
+                        }
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.white.opacity(0.08))
+                        )
+                    }
+
+                    if fixes.count > 3 {
+                        Text("+\(fixes.count - 3) more")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                keyHint(key: "⌘Z", label: "Undo")
+            }
         }
     }
 
