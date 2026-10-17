@@ -50,10 +50,11 @@ public final class AccessibilityBridge {
     // MARK: - Target App & Word Selection
 
     /// Triggers native "Check Document Now" (`Cmd + ;`) ONCE to highlight the nearest red-squiggly word.
-    /// Only falls back to `Opt + Shift + Left` if `Check Document Now` produced zero selection.
+    /// Only falls back to `Opt + Shift + Left` if `Check Document Now` produced zero selection and `fallbackToWordLeftOfCaret` is true.
     public func selectMisspelledOrCurrentWord(
         in pid: pid_t,
         hadActiveSelectionFromSpellBar: Bool,
+        fallbackToWordLeftOfCaret: Bool = true,
         temporarilyBypassHotkey: (() -> Void) -> Void
     ) -> String? {
         lastKnownWordQuartzRect = nil
@@ -100,6 +101,10 @@ public final class AccessibilityBridge {
             return copied
         }
 
+        guard fallbackToWordLeftOfCaret else {
+            return nil
+        }
+
         // 2. ONLY if nothing at all is selected: select the single word immediately to the left of the caret
         let currentAXText = readSelectionAndBoundsViaAX(in: pid)?.text ?? ""
         if currentAXText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -128,10 +133,23 @@ public final class AccessibilityBridge {
     /// Advances to the next misspelled word in the active field (`Cmd + ;` again).
     public func advanceToNextMisspelledWord(
         in pid: pid_t,
+        collapseCurrentSelectionFirst: Bool = false,
+        allowCopyFallback: Bool = true,
         temporarilyBypassHotkey: (() -> Void) -> Void
     ) -> String? {
-        lastKnownWordQuartzRect = nil
         let beforeText = readSelectionAndBoundsViaAX(in: pid)?.text
+
+        if collapseCurrentSelectionFirst {
+            collapseSelectionToRightEdge()
+            for _ in 0..<6 {
+                usleep(12_000)
+                let cur = readSelectionAndBoundsViaAX(in: pid)?.text ?? ""
+                if cur.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    break
+                }
+            }
+            usleep(20_000)
+        }
 
         let menuTriggered = triggerCheckDocumentNowMenuItem(in: pid)
         if !menuTriggered {
@@ -140,14 +158,14 @@ public final class AccessibilityBridge {
             }
         }
 
-        for _ in 0..<9 {
+        for _ in 0..<12 {
             usleep(15_000)
             if let (axText, axRect) = readSelectionAndBoundsViaAX(in: pid),
                !axText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 if let r = axRect {
                     lastKnownWordQuartzRect = r
                 }
-                if axText != beforeText {
+                if collapseCurrentSelectionFirst || axText != beforeText {
                     return axText
                 }
             }
@@ -159,6 +177,10 @@ public final class AccessibilityBridge {
                 lastKnownWordQuartzRect = r
             }
             return axText
+        }
+
+        guard allowCopyFallback else {
+            return nil
         }
 
         return copySelectedTextPreservingPasteboard()
@@ -194,6 +216,27 @@ public final class AccessibilityBridge {
 
         usleep(15_000)
         postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
+    }
+
+    /// Replaces the active selection and waits for the target application to process the paste before returning.
+    public func replaceSelectionAndWait(with replacement: String, previousSelection: String, in pid: pid_t) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(replacement, forType: .string)
+
+        usleep(15_000)
+        postKeyStroke(keyCode: CGKeyCode(kVK_ANSI_V), flags: .maskCommand)
+
+        for _ in 0..<12 {
+            usleep(15_000)
+            let current = readSelectionAndBoundsViaAX(in: pid)?.text ?? ""
+            if current.isEmpty || current != previousSelection {
+                break
+            }
+        }
+
+        // Allow web editor DOM and spellcheck markers to settle after paste
+        usleep(65_000)
     }
 
     // MARK: - AX Selection & Exact Word Screen Bounds

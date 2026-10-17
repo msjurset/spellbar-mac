@@ -102,6 +102,8 @@ final class SpellBarController: NSObject {
     private var currentAnalysis: WordAnalysis?
     private var hasUncollapsedSpellBarSelection: Bool = false
     private var pillShownAt: TimeInterval = 0
+    private var isRunningBatch: Bool = false
+    private var batchFinishedAt: TimeInterval = 0
     private var outsideClickMonitor: Any?
     private var outsideKeyMonitor: Any?
     private var autoDismissWorkItem: DispatchWorkItem?
@@ -281,6 +283,17 @@ final class SpellBarController: NSObject {
         }
     }
 
+    private func unregisterPrimaryHotKeys() {
+        if let ref = primaryHotKeyRef {
+            UnregisterEventHotKey(ref)
+            primaryHotKeyRef = nil
+        }
+        if let ref = instantHotKeyRef {
+            UnregisterEventHotKey(ref)
+            instantHotKeyRef = nil
+        }
+    }
+
     private func temporarilyBypassPrimaryHotKey(_ block: () -> Void) {
         if let ref = primaryHotKeyRef {
             UnregisterEventHotKey(ref)
@@ -352,6 +365,14 @@ final class SpellBarController: NSObject {
     // MARK: - HotKey Dispatch
 
     func handleHotKey(id: UInt32) {
+        if isRunningBatch {
+            return
+        }
+        // Ignore queued synthetic Cmd+; or hardware key-repeat bounces immediately following a batch run
+        if (id == 1 || id == 2) && (CACurrentMediaTime() - batchFinishedAt < 0.65) {
+            return
+        }
+
         switch id {
         case 1:
             // Primary Cmd + ;
@@ -415,32 +436,38 @@ final class SpellBarController: NSObject {
     }
 
     private func handleBatchAutoFixTrigger() {
+        guard !isRunningBatch else { return }
         guard AccessibilityBridge.shared.isTrusted,
               let frontApp = NSWorkspace.shared.frontmostApplication else {
             handlePrimaryTrigger()
             return
         }
+        isRunningBatch = true
         targetPID = frontApp.processIdentifier
         dismissPill(collapseSelection: false)
+        unregisterPrimaryHotKeys()
 
         let savedPb = AccessibilityBridge.shared.snapshotPasteboard()
 
         var fixes: [BatchFixSummary] = []
-        var seenWords = Set<String>()
-        let maxReplacements = 8
-        let maxIterations = 16
+        var skippedWords = Set<String>()
+        let maxReplacements = 25
+        let maxIterations = 35
 
-        // 1. Select the initial misspelled word (or current word)
+        // 1. Select the initial misspelled word via Check Document Now (without Opt+Shift+Left clean-word fallback)
         var currentSelected = AccessibilityBridge.shared.selectMisspelledOrCurrentWord(
             in: targetPID,
             hadActiveSelectionFromSpellBar: hasUncollapsedSpellBarSelection,
-            temporarilyBypassHotkey: { [weak self] work in
-                self?.temporarilyBypassPrimaryHotKey(work)
+            fallbackToWordLeftOfCaret: false,
+            temporarilyBypassHotkey: { work in
+                work()
             }
         )
         hasUncollapsedSpellBarSelection = false
 
-        // 2. Scan and replace safe high-confidence typos
+        let axSupported = (AccessibilityBridge.shared.readSelectionAndBoundsViaAX(in: targetPID) != nil)
+
+        // 2. Scan and replace safe high-confidence typos across the field
         for _ in 0..<maxIterations {
             guard let raw = currentSelected,
                   !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -449,61 +476,83 @@ final class SpellBarController: NSObject {
 
             let analysis = SpellEngine.shared.analyze(raw)
             let coreLower = analysis.coreWord.lowercased()
-
-            // Wrap-around detection: stop if Chrome or web editor loops back to start
-            if seenWords.contains(coreLower) {
-                break
-            }
-            seenWords.insert(coreLower)
+            guard !coreLower.isEmpty else { break }
 
             if let safeFix = SpellEngine.shared.highConfidenceSuggestion(for: analysis) {
                 let finalReplacement = analysis.formattedReplacement(using: safeFix)
-                AccessibilityBridge.shared.replaceSelectionDirect(with: finalReplacement)
+                AccessibilityBridge.shared.replaceSelectionAndWait(
+                    with: finalReplacement,
+                    previousSelection: raw,
+                    in: targetPID
+                )
                 fixes.append(BatchFixSummary(from: analysis.coreWord, to: safeFix))
 
                 if fixes.count >= maxReplacements {
                     break
                 }
 
-                // Allow web editor DOM to settle after paste
-                usleep(55_000)
-            }
-
-            // Advance to next misspelled word
-            currentSelected = AccessibilityBridge.shared.advanceToNextMisspelledWord(
-                in: targetPID,
-                temporarilyBypassHotkey: { [weak self] work in
-                    self?.temporarilyBypassPrimaryHotKey(work)
+                // Advance to next misspelled word (paste already collapsed selection)
+                currentSelected = AccessibilityBridge.shared.advanceToNextMisspelledWord(
+                    in: targetPID,
+                    collapseCurrentSelectionFirst: false,
+                    allowCopyFallback: !axSupported,
+                    temporarilyBypassHotkey: { work in
+                        work()
+                    }
+                )
+            } else {
+                // If we encounter the same skipped word a second time, Check Document Now wrapped around
+                if skippedWords.contains(coreLower) {
+                    break
                 }
-            )
+                if analysis.isMisspelled {
+                    skippedWords.insert(coreLower)
+                } else {
+                    break
+                }
+
+                // Collapse the skipped word selection to its right edge so Check Document Now advances past it
+                currentSelected = AccessibilityBridge.shared.advanceToNextMisspelledWord(
+                    in: targetPID,
+                    collapseCurrentSelectionFirst: true,
+                    allowCopyFallback: !axSupported,
+                    temporarilyBypassHotkey: { work in
+                        work()
+                    }
+                )
+            }
         }
 
         // 3. Collapse selection to right edge so user can keep typing immediately
         AccessibilityBridge.shared.collapseSelectionToRightEdge()
         hasUncollapsedSpellBarSelection = false
 
-        // 4. Restore original pasteboard contents after a settling interval
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+        // 4. Restore original pasteboard contents and re-register global hotkeys after settling
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
             AccessibilityBridge.shared.restorePasteboard(from: savedPb)
+            self?.registerPrimaryHotKeys()
         }
+
+        isRunningBatch = false
+        batchFinishedAt = CACurrentMediaTime()
 
         // 5. Show summary toast pill
         autoDismissWorkItem?.cancel()
         autoDismissWorkItem = nil
 
         let anchor = AccessibilityBridge.shared.locateSelectionAnchor(for: targetPID)
-        state.mode = .batchResult(fixes: fixes)
+        state.mode = .batchResult(fixes: fixes, skippedCount: skippedWords.count)
         pillShownAt = CACurrentMediaTime()
-        registerModalHotKeys()
         panel.show(near: anchor)
         installOutsideMonitors()
-        scheduleAutoDismiss(after: fixes.isEmpty ? 2.5 : 3.5)
+        scheduleAutoDismiss(after: fixes.isEmpty ? 3.0 : 5.5)
     }
 
     private func skipToNextMisspelled() {
         guard targetPID != 0 else { return }
         let selected = AccessibilityBridge.shared.advanceToNextMisspelledWord(
             in: targetPID,
+            collapseCurrentSelectionFirst: true,
             temporarilyBypassHotkey: { [weak self] work in
                 self?.temporarilyBypassPrimaryHotKey(work)
             }
@@ -619,11 +668,21 @@ final class SpellBarController: NSObject {
                 kVK_ANSI_J,
                 kVK_ANSI_K
             ]
-            if modalKeyCodes.contains(keyCode) {
-                return
-            }
             Task { @MainActor in
-                guard let self = self, CACurrentMediaTime() - self.pillShownAt > 0.15 else { return }
+                guard let self = self,
+                      !self.isRunningBatch,
+                      CACurrentMediaTime() - self.pillShownAt > 0.20,
+                      CACurrentMediaTime() - self.batchFinishedAt > 0.40 else { return }
+
+                if case .batchResult = self.state.mode {
+                    self.hasUncollapsedSpellBarSelection = false
+                    self.dismissPill(collapseSelection: false)
+                    return
+                }
+
+                if modalKeyCodes.contains(keyCode) {
+                    return
+                }
                 self.hasUncollapsedSpellBarSelection = false
                 self.dismissPill(collapseSelection: false)
             }

@@ -20,7 +20,7 @@ public final class SpellBarState {
         case needsPermission
         case suggestions(WordAnalysis)
         case cleanWord(String)
-        case batchResult(fixes: [BatchFixSummary])
+        case batchResult(fixes: [BatchFixSummary], skippedCount: Int = 0)
     }
 
     public var mode: Mode = .hidden
@@ -86,8 +86,8 @@ public struct SpellBarView: View {
             case .cleanWord(let word):
                 cleanWordView(word: word)
 
-            case .batchResult(let fixes):
-                batchResultView(fixes: fixes)
+            case .batchResult(let fixes, let skippedCount):
+                batchResultView(fixes: fixes, skippedCount: skippedCount)
             }
         }
         .padding(.horizontal, 12)
@@ -237,57 +237,96 @@ public struct SpellBarView: View {
         }
     }
 
-    private func batchResultView(fixes: [BatchFixSummary]) -> some View {
-        HStack(spacing: 10) {
+    private func batchResultView(fixes: [BatchFixSummary], skippedCount: Int) -> some View {
+        Group {
             if fixes.isEmpty {
-                Image(systemName: "checkmark.circle.fill")
-                    .font(.system(size: 14))
-                    .foregroundStyle(Color.green)
+                HStack(spacing: 10) {
+                    if skippedCount > 0 {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.orange)
 
-                Text("No safe typos found")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.9))
-            } else {
-                Image(systemName: "wand.and.stars")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color.indigo)
+                        Text("\(skippedCount) \(skippedCount == 1 ? "word needs" : "words need") manual review — press ⌘;")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.9))
+                    } else {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundStyle(Color.green)
 
-                HStack(spacing: 6) {
-                    Text("Auto-fixed \(fixes.count):")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(.white)
-
-                    ForEach(Array(fixes.prefix(3).enumerated()), id: \.offset) { _, fix in
-                        HStack(spacing: 4) {
-                            Text(fix.from)
-                                .font(.system(size: 11, design: .monospaced))
-                                .strikethrough(true, color: Color.red.opacity(0.8))
-                                .foregroundStyle(Color.white.opacity(0.7))
-                            Image(systemName: "arrow.right")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.45))
-                            Text(fix.to)
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundStyle(Color.green.opacity(0.95))
-                        }
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            RoundedRectangle(cornerRadius: 4)
-                                .fill(Color.white.opacity(0.08))
-                        )
-                    }
-
-                    if fixes.count > 3 {
-                        Text("+\(fixes.count - 3) more")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.6))
+                        Text("All clean — no misspellings detected")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.9))
                     }
                 }
+            } else {
+                let displayed = Array(fixes.prefix(8))
+                let rows: [[BatchFixSummary]] = stride(from: 0, to: displayed.count, by: 4).map {
+                    Array(displayed[$0..<min($0 + 4, displayed.count)])
+                }
 
-                Spacer(minLength: 8)
+                VStack(alignment: .leading, spacing: 8) {
+                    // Header row: count + skipped notice + keyboard hints
+                    HStack(spacing: 8) {
+                        Image(systemName: "wand.and.stars")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Color.indigo)
 
-                keyHint(key: "⌘Z", label: "Undo")
+                        Text("Auto-fixed \(fixes.count) \(fixes.count == 1 ? "typo" : "typos")")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundStyle(.white)
+
+                        if skippedCount > 0 {
+                            Text("• \(skippedCount) skipped (⌘; to review)")
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(Color.orange.opacity(0.9))
+                        }
+
+                        Spacer(minLength: 12)
+
+                        HStack(spacing: 8) {
+                            keyHint(key: "⌘Z", label: "Undo")
+                            keyHint(key: "Esc", label: "Dismiss")
+                        }
+                    }
+
+                    // Rows of corrected word pills (up to 4 per row, max 8 shown)
+                    ForEach(Array(rows.enumerated()), id: \.offset) { rowIdx, rowFixes in
+                        HStack(spacing: 6) {
+                            ForEach(Array(rowFixes.enumerated()), id: \.offset) { _, fix in
+                                HStack(spacing: 4) {
+                                    Text(fix.from)
+                                        .font(.system(size: 11, design: .monospaced))
+                                        .strikethrough(true, color: Color.red.opacity(0.85))
+                                        .foregroundStyle(Color.red.opacity(0.85))
+                                    Image(systemName: "arrow.right")
+                                        .font(.system(size: 8, weight: .bold))
+                                        .foregroundStyle(.white.opacity(0.45))
+                                    Text(fix.to)
+                                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                        .foregroundStyle(Color.green.opacity(0.95))
+                                }
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 3)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 5)
+                                        .fill(Color.white.opacity(0.08))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 5)
+                                        .strokeBorder(Color.white.opacity(0.1), lineWidth: 1)
+                                )
+                            }
+
+                            if rowIdx == rows.count - 1 && fixes.count > displayed.count {
+                                Text("+\(fixes.count - displayed.count) more")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.65))
+                                    .padding(.leading, 4)
+                            }
+                        }
+                    }
+                }
             }
         }
     }

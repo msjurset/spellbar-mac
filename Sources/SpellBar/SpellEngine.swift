@@ -106,7 +106,35 @@ public final class SpellEngine {
         "shoudl": "should",
         "woudl": "would",
         "becuase": "because",
-        "beacuse": "because"
+        "beacuse": "because",
+        "thta": "that",
+        "waht": "what",
+        "ahve": "have",
+        "jsut": "just",
+        "knwo": "know",
+        "firts": "first",
+        "abotu": "about",
+        "speling": "spelling",
+        "pakage": "package",
+        "damged": "damaged",
+        "mesage": "message",
+        "sentance": "sentence",
+        "problme": "problem",
+        "importnat": "important",
+        "diferent": "different",
+        "exmaple": "example",
+        "langauge": "language",
+        "thier": "their",
+        "verison": "version",
+        "fucntion": "function",
+        "retunr": "return",
+        "chagne": "change",
+        "udpate": "update",
+        "delte": "delete",
+        "creaet": "create",
+        "reponse": "response",
+        "requset": "request",
+        "paragrapsh": "paragraphs"
     ]
 
     public init() {}
@@ -210,8 +238,8 @@ public final class SpellEngine {
             candidates.append(applyCasing(of: word, to: guess))
         }
 
-        // 4. Fallback to completions if guesses came back empty
-        if candidates.isEmpty {
+        // 4. Fallback to completions only when the word is actually misspelled and guesses came back empty
+        if isMisspelled && candidates.isEmpty {
             let completions = checker.completions(forPartialWordRange: fullRange, in: word, language: language, inSpellDocumentWithTag: 0) ?? []
             for comp in completions.prefix(maxSuggestions) {
                 candidates.append(applyCasing(of: word, to: comp))
@@ -238,7 +266,7 @@ public final class SpellEngine {
             leadingTrivia: leading,
             coreWord: word,
             trailingTrivia: trailing,
-            isMisspelled: isMisspelled || !unique.isEmpty,
+            isMisspelled: isMisspelled,
             suggestions: unique
         )
     }
@@ -321,13 +349,32 @@ public final class SpellEngine {
     }
 
     /// Determines whether an analyzed word qualifies for unattended batch auto-correction.
-    /// Returns the replacement string if safe and unambiguous; nil if risky or ambiguous.
+    /// Returns the replacement string if safe; nil if it looks like code, an acronym, or an unrecognizable token.
     public func highConfidenceSuggestion(for analysis: WordAnalysis) -> String? {
+        guard analysis.isMisspelled else { return nil }
         let word = analysis.coreWord
-        guard word.count >= 3 else { return nil }
+        guard word.count >= 2 else { return nil }
 
-        // Must only contain letters or apostrophes (skip flags, variables, paths, and URLs)
+        // Must only contain letters or apostrophes (skip flags, variables, snake_case, paths, and URLs)
         guard word.allSatisfy({ $0.isLetter || $0 == "'" || $0 == "’" }) else { return nil }
+
+        // Skip CLI flags, snake_case, paths, and env vars where trivia attaches code symbols directly to the token
+        let codeDelimiters = CharacterSet(charactersIn: "-_/$@#\\")
+        if let lastLead = analysis.leadingTrivia.unicodeScalars.last, codeDelimiters.contains(lastLead) {
+            return nil
+        }
+        if let firstTrail = analysis.trailingTrivia.unicodeScalars.first, codeDelimiters.contains(firstTrail) {
+            return nil
+        }
+
+        let lowered = word.lowercased()
+
+        // 1. Direct match in curated common typos dictionary (100% confidence)
+        if let directFix = commonTypos[lowered] {
+            return applyCasing(of: word, to: directFix)
+        }
+
+        guard word.count >= 3 else { return nil }
 
         // Must not be all-caps (skip acronyms like API, JSON, URL)
         let letters = word.filter { $0.isLetter }
@@ -341,30 +388,31 @@ public final class SpellEngine {
             }
         }
 
-        let lowered = word.lowercased()
+        // 2. Check top ranked suggestion from NSSpellChecker + transposition ranker
+        guard let bestGuess = analysis.suggestions.first else { return nil }
+        let bestLower = bestGuess.lowercased()
 
-        // 1. Direct match in curated common typos dictionary (100% confidence)
-        if let directFix = commonTypos[lowered] {
-            return applyCasing(of: word, to: directFix)
+        // Pure anagram / letter transposition of the same characters is always a high-confidence typo
+        if bestLower.sorted() == lowered.sorted() {
+            return bestGuess
         }
 
-        // 2. High-confidence suggestions check
-        guard let bestGuess = analysis.suggestions.first else { return nil }
+        let dist = editDistance(lowered, bestLower)
 
-        let dist = editDistance(lowered, bestGuess.lowercased())
+        let maxAllowedDistance: Int
+        if word.count <= 3 {
+            maxAllowedDistance = 1
+        } else if word.count <= 6 {
+            maxAllowedDistance = 2
+        } else {
+            maxAllowedDistance = 3
+        }
 
-        // Single transposition or 1-edit typo where top guess is clear winner
-        if dist <= 1 {
-            if analysis.suggestions.count >= 2 {
-                let secondDist = editDistance(lowered, analysis.suggestions[1].lowercased())
-                // If top 2 guesses are tied in edit distance, it is ambiguous -> skip
-                if secondDist == dist {
-                    return nil
-                }
-            }
+        if dist <= maxAllowedDistance {
             return bestGuess
         }
 
         return nil
     }
 }
+

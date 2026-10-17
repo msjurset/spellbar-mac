@@ -89,6 +89,15 @@ final class SpellBarTests: XCTestCase {
 
         let sep = engine.analyze("seperate")
         XCTAssertEqual(engine.highConfidenceSuggestion(for: sep), "separate")
+
+        let spel = engine.analyze("speling")
+        XCTAssertEqual(engine.highConfidenceSuggestion(for: spel), "spelling")
+
+        let dmg = engine.analyze("damged")
+        XCTAssertEqual(engine.highConfidenceSuggestion(for: dmg), "damaged")
+
+        let pkg = engine.analyze("pakage")
+        XCTAssertEqual(engine.highConfidenceSuggestion(for: pkg), "package")
     }
 
     @MainActor
