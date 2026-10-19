@@ -609,7 +609,7 @@ final class SpellBarController: NSObject {
             finalReplacement = chosenSuggestion
         }
 
-        AccessibilityBridge.shared.replaceSelection(with: finalReplacement)
+        AccessibilityBridge.shared.replaceSelection(with: finalReplacement, in: targetPID)
     }
 
     func dismissPill(collapseSelection: Bool = false) {

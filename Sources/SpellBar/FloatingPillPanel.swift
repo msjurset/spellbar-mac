@@ -15,7 +15,7 @@ public final class FloatingPillPanel: NSPanel {
         )
 
         self.isFloatingPanel = true
-        self.level = .statusBar
+        self.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
         self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
         self.isOpaque = false
         self.backgroundColor = .clear

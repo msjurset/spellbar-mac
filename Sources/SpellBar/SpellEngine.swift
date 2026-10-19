@@ -54,6 +54,7 @@ public final class SpellEngine {
         "occuring": "occurring",
         "occurence": "occurrence",
         "untill": "until",
+        "whil": "while",
         "wich": "which",
         "wierd": "weird",
         "accomodate": "accommodate",
